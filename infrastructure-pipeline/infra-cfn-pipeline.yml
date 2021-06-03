@@ -1,0 +1,204 @@
+Parameters:
+  InfrastructureName:
+    Type: String
+    Description: Infrastructure Name
+  GithubRepo:
+    Type: String
+    Description: Github source code repository
+  GithubRepoBranch:
+    Default: 'main'
+    Type: String
+    Description: Github source code branch
+Resources:
+  CfnTemplatesBucket:
+    Type: 'AWS::S3::Bucket'
+    Description: S3 bucket for CFN artifacts
+    Properties:
+      BucketName: !Sub '${AWS::Region}-${AWS::AccountId}-${InfrastructureName}-cfn-templates'
+  BuildProjectRole:
+    Type: 'AWS::IAM::Role'
+    Description: IAM role for !Ref InfrastructureName CFN artifacts build resource
+    Properties:
+      RoleName: !Sub '${InfrastructureName}-cfn-build-role'
+      Policies:
+        - PolicyName: !Sub '${InfrastructureName}-cfn-build-policy'
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketAcl
+                  - s3:GetBucketLocation
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${CfnTemplatesBucket}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${CfnTemplatesBucket}/*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: "sts:AssumeRole"
+            Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+  CloudFormationRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-cloudformation-deployer-role'
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "cloudformation.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+  PipelineRole:
+    Type: 'AWS::IAM::Role'
+    Description: IAM role for !Ref InfrastructureName pipeline resource
+    Properties:
+      RoleName: !Sub '${InfrastructureName}-pipeline-role'
+      Policies:
+        - PolicyName: !Sub '${InfrastructureName}-pipeline-policy'
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                Resource: !Ref GithubConnection
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:GetBucketAcl
+                  - s3:PutObjectAcl
+                  - s3:GetBucketLocation
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:s3:::${CfnTemplatesBucket}'
+                  - !Sub 'arn:${AWS::Partition}:s3:::${CfnTemplatesBucket}/*'
+              - Effect: Allow
+                Action:
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuildBatches
+                  - codebuild:StartBuildBatch
+                Resource:
+                  - !GetAtt [ BuildProject, Arn ]
+              - Effect: Allow
+                Action:
+                  - codedeploy:*
+                Resource: !Sub 'arn:${AWS::Partition}:codedeploy:${AWS::Region}:${AWS::AccountId}*'
+              - Effect: Allow
+                Action:
+                  - ec2:*
+                Resource:
+                  - "*"
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: "sts:AssumeRole"
+            Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub '${InfrastructureName}-cfn-build-project'
+      Description: A build project for !Ref InfrastructureName
+      ServiceRole: !Ref BuildProjectRole
+      Artifacts:
+        Type: CODEPIPELINE
+        Packaging: ZIP
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-x86_64-standard:3.0
+        EnvironmentVariables:
+          - Name: CFN_TEMPLATES_BUCKET_NAME
+            Type: PLAINTEXT
+            Value: !Ref CfnTemplatesBucket
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            build:
+              commands:
+                - aws cloudformation package --template-file infrastructure-code/s3-bucket.yml --output-template infrastructure-code/s3-bucket-packaged.yml --s3-bucket $CFN_TEMPLATES_BUCKET_NAME
+          artifacts:
+            files:
+              - 'infrastructure-code/*-packaged.yml'
+  GithubConnection:
+    Type: AWS::CodeStarConnections::Connection
+    Properties:
+      ConnectionName: !Ref InfrastructureName
+      ProviderType: GitHub
+  Pipeline:
+    Description: Creating a deployment pipeline for !Ref InfrastructureName project in AWS CodePipeline
+    Type: 'AWS::CodePipeline::Pipeline'
+    Properties:
+      RoleArn: !GetAtt [PipelineRole, Arn]
+      ArtifactStore:
+        Type: S3
+        Location: !Ref CfnTemplatesBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Version: 1
+                Provider: CodeStarSourceConnection
+              OutputArtifacts:
+                - Name: SourceOutput
+              Configuration:
+                ConnectionArn: !Ref GithubConnection
+                FullRepositoryId: !Ref GithubRepo
+                BranchName: !Ref GithubRepoBranch
+                OutputArtifactFormat: "CODE_ZIP"
+        - Name: Build
+          Actions:
+            - Name: Build
+              InputArtifacts:
+                - Name: SourceOutput
+              OutputArtifacts:
+                - Name: BuildOutput
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              Configuration:
+                ProjectName:
+                  Ref: BuildProject
+#        - Name: DeployTest
+#          Actions:
+#            - Name: DeployTest
+#              RunOrder: 1
+#              InputArtifacts:
+#                - Name: BuildOutput
+#              ActionTypeId:
+#                Category: Deploy
+#                Owner: AWS
+#                Version: 1
+#                Provider: CloudFormation
+#              Configuration:
+#                ActionMode: CREATE_UPDATE
+#                RoleArn: !GetAtt [CloudFormationRole, Arn]
+#                Capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND,CAPABILITY_IAM
+#                TemplatePath: !Sub 'BuildOutput::s3-bucket-packaged.yml'
+#                ParameterOverrides: !Sub '{"BucketName":"${AWS::Region}-${AWS::AccountId}-${InfrastructureName}-someTest"}'
+#                StackName: !Sub "${InfrastructureName}-infra-stack"
+#              RoleArn: !GetAtt [CloudFormationRole, Arn]
