@@ -1,5 +1,5 @@
 Parameters:
-  InfrastructureName:
+  InfraStackName:
     Type: String
     Description: Infrastructure Name
   GithubRepo:
@@ -14,14 +14,14 @@ Resources:
     Type: 'AWS::S3::Bucket'
     Description: S3 bucket for CFN artifacts
     Properties:
-      BucketName: !Sub '${AWS::Region}-${AWS::AccountId}-${InfrastructureName}-cfn-templates'
+      BucketName: !Sub '${AWS::Region}-${AWS::AccountId}-${InfraStackName}-cfn-templates'
   BuildProjectRole:
     Type: 'AWS::IAM::Role'
-    Description: IAM role for !Ref InfrastructureName CFN artifacts build resource
+    Description: IAM role for !Ref InfraStackName CFN artifacts build resource
     Properties:
-      RoleName: !Sub '${InfrastructureName}-cfn-build-role'
+      RoleName: !Sub '${InfraStackName}-cfn-build-role'
       Policies:
-        - PolicyName: !Sub '${InfrastructureName}-cfn-build-policy'
+        - PolicyName: !Sub '${InfraStackName}-cfn-build-policy'
           PolicyDocument:
             Statement:
               - Effect: Allow
@@ -65,11 +65,11 @@ Resources:
         - arn:aws:iam::aws:policy/AmazonS3FullAccess
   PipelineRole:
     Type: 'AWS::IAM::Role'
-    Description: IAM role for !Ref InfrastructureName pipeline resource
+    Description: IAM role for !Ref InfraStackName pipeline resource
     Properties:
-      RoleName: !Sub '${InfrastructureName}-pipeline-role'
+      RoleName: !Sub '${InfraStackName}-pipeline-role'
       Policies:
-        - PolicyName: !Sub '${InfrastructureName}-pipeline-policy'
+        - PolicyName: !Sub '${InfraStackName}-pipeline-policy'
           PolicyDocument:
             Statement:
               - Effect: Allow
@@ -104,6 +104,9 @@ Resources:
                   - ec2:*
                 Resource:
                   - "*"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
+        - arn:aws:iam::aws:policy/IAMFullAccess
       AssumeRolePolicyDocument:
         Statement:
           - Action: "sts:AssumeRole"
@@ -114,8 +117,8 @@ Resources:
   BuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
-      Name: !Sub '${InfrastructureName}-cfn-build-project'
-      Description: A build project for !Ref InfrastructureName
+      Name: !Sub '${InfraStackName}-cfn-build-project'
+      Description: A build project for !Ref InfraStackName
       ServiceRole: !Ref BuildProjectRole
       Artifacts:
         Type: CODEPIPELINE
@@ -142,10 +145,10 @@ Resources:
   GithubConnection:
     Type: AWS::CodeStarConnections::Connection
     Properties:
-      ConnectionName: !Ref InfrastructureName
+      ConnectionName: !Ref InfraStackName
       ProviderType: GitHub
   Pipeline:
-    Description: Creating a deployment pipeline for !Ref InfrastructureName project in AWS CodePipeline
+    Description: Creating a deployment pipeline for !Ref InfraStackName project in AWS CodePipeline
     Type: 'AWS::CodePipeline::Pipeline'
     Properties:
       RoleArn: !GetAtt [PipelineRole, Arn]
@@ -183,22 +186,21 @@ Resources:
               Configuration:
                 ProjectName:
                   Ref: BuildProject
-#        - Name: DeployTest
-#          Actions:
-#            - Name: DeployTest
-#              RunOrder: 1
-#              InputArtifacts:
-#                - Name: BuildOutput
-#              ActionTypeId:
-#                Category: Deploy
-#                Owner: AWS
-#                Version: 1
-#                Provider: CloudFormation
-#              Configuration:
-#                ActionMode: CREATE_UPDATE
-#                RoleArn: !GetAtt [CloudFormationRole, Arn]
-#                Capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND,CAPABILITY_IAM
-#                TemplatePath: !Sub 'BuildOutput::s3-bucket-packaged.yml'
-#                ParameterOverrides: !Sub '{"BucketName":"${AWS::Region}-${AWS::AccountId}-${InfrastructureName}-someTest"}'
-#                StackName: !Sub "${InfrastructureName}-infra-stack"
-#              RoleArn: !GetAtt [CloudFormationRole, Arn]
+        - Name: DeployTest
+          Actions:
+            - Name: DeployTest
+              RunOrder: 1
+              InputArtifacts:
+                - Name: BuildOutput
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Version: 1
+                Provider: CloudFormation
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                RoleArn: !GetAtt [CloudFormationRole, Arn]
+                Capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND,CAPABILITY_IAM
+                TemplatePath: !Sub 'BuildOutput::infrastructure-code/s3-bucket-packaged.yml'
+                ParameterOverrides: !Sub '{"BucketName":"${AWS::Region}-${AWS::AccountId}-sometest"}'
+                StackName: !Sub "${InfraStackName}"
